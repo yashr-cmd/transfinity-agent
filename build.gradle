@@ -1,0 +1,47 @@
+plugins {
+    id 'java'
+    id 'com.gradleup.shadow' version '8.3.6'
+}
+
+group = 'org.example'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation platform('org.junit:junit-bom:6.0.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    implementation 'org.ow2.asm:asm:9.5'
+    implementation 'org.ow2.asm:asm-tree:9.5'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 17
+}
+
+/* AGENT MANIFEST - applied to the shadow (fat) jar */
+shadowJar {
+    archiveClassifier = ''   // replaces the plain jar as the main output
+    manifest {
+        attributes(
+                'Premain-Class': 'agent.AgentMain'
+        )
+    }
+    // No relocate needed - agent classloader is isolated from Minecraft's
+}
+
+/* Make 'build' produce the fat jar automatically */
+assemble.dependsOn shadowJar
+
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+}
