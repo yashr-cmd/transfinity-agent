@@ -95,7 +95,7 @@ public class AgentMain {
             // ── WHITELIST: classes we patch ourselves; skip the threat system ──
             if (className.equals("net/minecraft/world/entity/LivingEntity")) {
                 log("GOD-MODE", "Injecting god mode into LivingEntity");
-                return patchLivingEntity(classfileBuffer);
+                return PatchUtils.patchLivingEntity(classfileBuffer);
             }
 
             // ── STEP 1: Check if this class looks suspicious ──────────────────
@@ -338,13 +338,6 @@ public class AgentMain {
         // TODO: add MyLib2-specific targeted patching logic here if you have it.
         // For now we just wipe all methods the same as the generic path.
         return disableAllMethods(classfileBuffer);
-    }
-
-    // ── WHITELIST patch: inject god mode into LivingEntity ───────────────────
-    private static byte[] patchLivingEntity(byte[] classfileBuffer) {
-        // TODO: plug in your existing god-mode ASM patch here.
-        // Returning unchanged bytes for now so the game still boots.
-        return classfileBuffer;
     }
 
     // ========================================================================
