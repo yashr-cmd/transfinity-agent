@@ -19,7 +19,7 @@ It is an optional enhancement that runs at JVM startup.
 4. Add this to **Additional Arguments**:
 
 ```
--javaagent:"C:\Users\YourName\Downloads\transfinity-agent.jar"
+-javaagent:C:\Users\YourName\Downloads\transfinity-agent.jar
 ```
 
 ---
