@@ -46,6 +46,213 @@ public class AgentMain {
     // ========================================================================
     public static class DefenseTransformer implements ClassFileTransformer {
 
+        private static boolean isCoremodEntry(byte[] bytes) {
+            try {
+                ClassReader cr = new ClassReader(bytes);
+                final boolean[] found = {false};
+
+                cr.accept(new ClassVisitor(ASM_API) {
+                    @Override
+                    public void visit(int v, int a, String n, String sig,
+                                      String superName, String[] interfaces) {
+
+                        if (interfaces != null) {
+                            for (String i : interfaces) {
+                                if (i.contains("ITransformationService")
+                                        || i.contains("ILaunchPluginService")) {
+                                    found[0] = true;
+                                }
+                            }
+                        }
+                    }
+                }, 0);
+
+                return found[0];
+
+            } catch (Throwable t) {
+                return false;
+            }
+        }
+
+        private static int detectRuntimeThreat(byte[] bytes) {
+            try {
+                ClassReader cr = new ClassReader(bytes);
+                final int[] flags = {0};
+
+                cr.accept(new ClassVisitor(ASM_API) {
+                    @Override
+                    public MethodVisitor visitMethod(int access, String name, String desc,
+                                                     String sig, String[] exceptions) {
+                        return new MethodVisitor(ASM_API) {
+                            @Override
+                            public void visitMethodInsn(int op, String owner,
+                                                        String name, String desc, boolean itf) {
+
+                                if (owner.contains("VirtualMachine")
+                                        && (name.equals("attach") || name.equals("loadAgent")))
+                                    flags[0] |= 1;
+
+                                if (owner.contains("Instrumentation")
+                                        && (name.contains("addTransformer")
+                                        || name.contains("retransformClasses")))
+                                    flags[0] |= 2;
+
+                                if ((owner.equals("java/lang/System") || owner.equals("java/lang/Runtime"))
+                                        && (name.equals("load") || name.equals("loadLibrary")))
+                                    flags[0] |= 4;
+
+                                if (owner.contains("Unsafe") || name.equals("defineClass"))
+                                    flags[0] |= 8;
+                            }
+                        };
+                    }
+                }, 0);
+
+                return flags[0];
+
+            } catch (Throwable t) {
+                return 0;
+            }
+        }
+
+        private static boolean isRealTransformer(byte[] bytes) {
+            try {
+                ClassReader cr = new ClassReader(bytes);
+                final boolean[] found = {false};
+
+                cr.accept(new ClassVisitor(ASM_API) {
+                    @Override
+                    public void visit(int v, int a, String n, String sig,
+                                      String superName, String[] interfaces) {
+
+                        if (interfaces != null) {
+                            for (String i : interfaces) {
+                                if (i.contains("TransformationService")
+                                        || i.contains("ITransformer")
+                                        || i.contains("ClassFileTransformer")) {
+                                    found[0] = true;
+                                }
+                            }
+                        }
+
+                        if (superName != null && superName.contains("Transformer"))
+                            found[0] = true;
+                    }
+                }, 0);
+
+                return found[0];
+
+            } catch (Throwable t) {
+                return false;
+            }
+        }
+
+        private static boolean isASMManipulator(byte[] bytes) {
+            try {
+                ClassReader cr = new ClassReader(bytes);
+                final boolean[] found = {false};
+
+                cr.accept(new ClassVisitor(ASM_API) {
+                    @Override
+                    public void visit(int v, int a, String n, String sig,
+                                      String superName, String[] interfaces) {
+
+                        if (superName != null && superName.contains("ClassVisitor"))
+                            found[0] = true;
+
+                        if (superName != null && superName.contains("MethodVisitor"))
+                            found[0] = true;
+                    }
+
+                    @Override
+                    public MethodVisitor visitMethod(int access, String name, String desc,
+                                                     String sig, String[] exceptions) {
+
+                        return new MethodVisitor(ASM_API) {
+                            @Override
+                            public void visitMethodInsn(int op, String owner,
+                                                        String name, String desc, boolean itf) {
+
+                                if (owner.startsWith("org/objectweb/asm")) {
+                                    found[0] = true;
+                                }
+                            }
+                        };
+                    }
+                }, 0);
+
+                return found[0];
+
+            } catch (Throwable t) {
+                return false;
+            }
+        }
+
+        private static boolean hasMixinInjection(byte[] bytes) {
+            try {
+                ClassReader cr = new ClassReader(bytes);
+                final boolean[] found = {false};
+
+                cr.accept(new ClassVisitor(ASM_API) {
+                    @Override
+                    public MethodVisitor visitMethod(int access, String name, String desc,
+                                                     String sig, String[] exceptions) {
+
+                        // Detect typical mixin-generated method names
+                        if (name.startsWith("handler$")
+                                || name.contains("$inject$")
+                                || name.contains("callback")) {
+                            found[0] = true;
+                        }
+
+                        return new MethodVisitor(ASM_API) {
+                            @Override
+                            public void visitMethodInsn(int opcode, String owner,
+                                                        String name, String desc, boolean itf) {
+
+                                // Correct place for this check
+                                if (owner.contains("org/spongepowered/asm/mixin/injection")) {
+                                    found[0] = true;
+                                }
+                            }
+                        };
+                    }
+                }, 0);
+
+                return found[0];
+
+            } catch (Throwable t) {
+                return false;
+            }
+        }
+
+        private static boolean isTransformService(byte[] bytes) {
+            try {
+                ClassReader cr = new ClassReader(bytes);
+                final boolean[] found = {false};
+
+                cr.accept(new ClassVisitor(ASM_API) {
+                    @Override
+                    public void visit(int v, int a, String n, String sig,
+                                      String superName, String[] interfaces) {
+
+                        if (interfaces != null) {
+                            for (String i : interfaces) {
+                                if (i.contains("TransformationService")) {
+                                    found[0] = true;
+                                }
+                            }
+                        }
+                    }
+                }, 0);
+
+                return found[0];
+
+            } catch (Throwable t) {
+                return false;
+            }
+        }
+
         // Tracks cumulative threat score per package-group
         // e.g. "com/evil" is the group for "com/evil/MyPlugin" and "com/evil/MyXformer"
         private final ConcurrentHashMap<String, AtomicInteger> groupScores =
@@ -69,16 +276,23 @@ public class AgentMain {
                 String className,           // e.g. "com/evil/MyPlugin"  (slashes, not dots)
                 Class<?> classBeingRedefined,
                 ProtectionDomain domain,
-                byte[] classfileBuffer) {   // raw bytecode of the class
+                byte[] classfileBuffer) {// raw bytecode of the class
+
+
 
             if (className == null) return null;
 
             // ── GLOBAL WHITELIST ──
             // 🛑 HARD IMMUNITY (DO NOT TOUCH EVER)
             if (className.startsWith("org/spongepowered/")
+                    || className.startsWith("net/mcreator/transfinityimproved/")
+                    || className.startsWith("org/openjdk/")
+                    || className.startsWith("org/joml/")
+                    || className.startsWith("org/lwjgl/")
                     || className.startsWith("cpw/mods/")
                     || className.startsWith("net/minecraftforge/")
                     || className.startsWith("net/neoforged/")
+                    || className.startsWith("net/jodah/")
                     || className.startsWith("java/")
                     || className.startsWith("javax/")
                     || className.startsWith("jdk/")
@@ -96,6 +310,123 @@ public class AgentMain {
             if (className.equals("net/minecraft/world/entity/LivingEntity")) {
                 log("GOD-MODE", "Injecting god mode into LivingEntity");
                 return PatchUtils.patchLivingEntity(classfileBuffer);
+            }
+
+            // ── JDK INTERNAL IMMUNITY ─────────────────────────────
+            if (className.startsWith("com/sun/")
+                    || className.startsWith("sun/")
+                    || className.startsWith("jdk/")
+                    || className.startsWith("java/lang/management/")) {
+                return null;
+            }
+
+            // ── FIRST: TRANSFORMER CHECK ─────────────────────────────
+            // ── TRANSFORMATION SERVICE (DO NOT TOUCH) ──
+            if (isTransformService(classfileBuffer)) {
+                log("SAFE", "Allowing TransformationService: " + className);
+                return null; // IMPORTANT
+            }
+
+            // ── TRANSFORMERS (SAFE DISABLE) ──
+            if (isRealTransformer(classfileBuffer)) {
+                String group = extractGroup(className);
+                int score = addThreat(group);
+
+                loudAction("⚠⚠⚠ DISABLE (TRANSFORMER)", className, "transformer", group, score);
+                return disableSafe(classfileBuffer);
+            }
+
+            // ── COREMOD ENTRY (BLOCK HARD) ──
+            if (isCoremodEntry(classfileBuffer)) {
+                String group = extractGroup(className);
+                int score = addThreat(group);
+
+                loudAction("✖✖✖ ERASE (COREMOD ENTRY)",
+                        className, "coremod-entry", group, score);
+
+                return emptyClass(classfileBuffer);
+            }
+
+            // ── ASM MANIPULATOR ──
+            if (isASMManipulator(classfileBuffer)) {
+                String group = extractGroup(className);
+                int score = addThreat(group);
+
+                loudAction("⚠⚠⚠ DISABLE (ASM MANIPULATOR)",
+                        className, "asm", group, score);
+
+                return disableSafe(classfileBuffer);
+            }
+
+            // ── MIXIN INJECTION DETECTION ──
+            // ── TARGETED MIXIN DEFENSE ──
+            if (hasMixinInjection(classfileBuffer)
+                    && !className.startsWith("net/mcreator/transfinityimproved/")
+                    && !className.startsWith("net/minecraft/")
+                    && !className.startsWith("org/spongepowered/")
+                    && !className.startsWith("com/mojang/")) {
+
+                // Only target dangerous game areas
+                if (className.contains("Entity")
+                        || className.contains("LivingEntity")
+                        || className.contains("Player")
+                        || className.contains("Health")
+                        || className.contains("Navigation")) {
+
+                    String group = extractGroup(className);
+                    int score = addThreat(group);
+
+                    loudAction("✖✖✖ ERASE (TARGETED MIXIN)",
+                            className, "mixin-targeted", group, score);
+
+                    return emptyClass(classfileBuffer);
+                }
+            }
+
+            // ── VISITOR NAME HEURISTIC ──
+            if ((className.contains("ClassVisitor")
+                    || className.contains("MethodVisitor"))
+                    && !className.startsWith("org/objectweb/")) {
+
+                String group = extractGroup(className);
+                int score = addThreat(group);
+
+                loudAction("⚠⚠⚠ DISABLE (VISITOR NAME)",
+                        className, "visitor-name", group, score);
+
+                return disableSafe(classfileBuffer);
+            }
+
+            //  ── MIXIN DETECTION ──
+            if (className.toLowerCase().contains("mixin")
+                    && !className.startsWith("org/spongepowered/")
+                    && !className.startsWith("net/mcreator/transfinityimproved/")) {
+
+                String group = extractGroup(className);
+                int score = addThreat(group);
+
+                loudAction("⚠⚠⚠ DISABLE (MIXIN CLASS)",
+                        className, "mixin", group, score);
+
+                return disableSafe(classfileBuffer);
+            }
+
+            // ── RUNTIME INJECTION CHECK ─────────────────────────────
+            int runtime = detectRuntimeThreat(classfileBuffer);
+
+            if (runtime != 0) {
+                String group = extractGroup(className);
+                int score = addThreat(group);
+
+                if ((runtime & 1) != 0 || (runtime & 2) != 0 || (runtime & 4) != 0) {
+                    loudAction("✖✖✖ ERASE (RUNTIME INJECTION)", className, "agent/dll", group, score);
+                    return emptyClass(classfileBuffer);
+                }
+
+                if ((runtime & 8) != 0) {
+                    loudAction("⚠⚠⚠ DISABLE (UNSAFE)", className, "unsafe", group, score);
+                    return disableAllMethods(classfileBuffer);
+                }
             }
 
             // ── STEP 1: Check if this class looks suspicious ──────────────────
@@ -165,7 +496,6 @@ public class AgentMain {
             if (className.contains("MyXformer"))    return "explicit-transformer";
 
             // Generic suspicious naming patterns
-            if (className.contains("Transformer"))  return "transformer-name";
             if (className.contains("ClassVisitor")) return "asm-visitor";
             if (className.contains("MethodVisitor"))return "asm-method-visitor";
             if (className.contains("ByteBuddy"))    return "bytebuddy-agent";
@@ -327,6 +657,113 @@ public class AgentMain {
                     @Override public void visitIincInsn(int v, int inc)             {}
                 };
             }
+        }, ClassReader.EXPAND_FRAMES);
+
+        return cw.toByteArray();
+    }
+
+    private static byte[] disableSafe(byte[] original) {
+        ClassReader cr = new ClassReader(original);
+        ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES);
+
+        cr.accept(new ClassVisitor(ASM_API, cw) {
+
+            @Override
+            public MethodVisitor visitMethod(int access, String name, String desc,
+                                             String sig, String[] exceptions) {
+
+                MethodVisitor mv = super.visitMethod(access, name, desc, sig, exceptions);
+
+                // Keep constructors intact
+                if (name.equals("<init>") || name.equals("<clinit>")) return mv;
+
+                return new MethodVisitor(ASM_API, mv) {
+
+                    @Override
+                    public void visitCode() {
+                        super.visitCode();
+
+                        Type returnType = Type.getReturnType(desc);
+
+                        switch (returnType.getSort()) {
+
+                            case Type.VOID:
+                                mv.visitInsn(Opcodes.RETURN);
+                                break;
+
+                            case Type.BOOLEAN:
+                            case Type.INT:
+                            case Type.BYTE:
+                            case Type.CHAR:
+                            case Type.SHORT:
+                                mv.visitInsn(Opcodes.ICONST_0);
+                                mv.visitInsn(Opcodes.IRETURN);
+                                break;
+
+                            case Type.LONG:
+                                mv.visitInsn(Opcodes.LCONST_0);
+                                mv.visitInsn(Opcodes.LRETURN);
+                                break;
+
+                            case Type.FLOAT:
+                                mv.visitInsn(Opcodes.FCONST_0);
+                                mv.visitInsn(Opcodes.FRETURN);
+                                break;
+
+                            case Type.DOUBLE:
+                                mv.visitInsn(Opcodes.DCONST_0);
+                                mv.visitInsn(Opcodes.DRETURN);
+                                break;
+
+                            default:
+                                String type = returnType.getInternalName();
+
+                                // SAFE COLLECTION RETURNS
+                                if ("java/util/List".equals(type)) {
+                                    mv.visitMethodInsn(Opcodes.INVOKESTATIC,
+                                            "java/util/Collections",
+                                            "emptyList",
+                                            "()Ljava/util/List;",
+                                            false);
+                                } else if ("java/util/Set".equals(type)) {
+                                    mv.visitMethodInsn(Opcodes.INVOKESTATIC,
+                                            "java/util/Collections",
+                                            "emptySet",
+                                            "()Ljava/util/Set;",
+                                            false);
+                                } else if ("java/util/Map".equals(type)) {
+                                    mv.visitMethodInsn(Opcodes.INVOKESTATIC,
+                                            "java/util/Collections",
+                                            "emptyMap",
+                                            "()Ljava/util/Map;",
+                                            false);
+                                } else {
+                                    mv.visitInsn(Opcodes.ACONST_NULL);
+                                }
+
+                                mv.visitInsn(Opcodes.ARETURN);
+                                break;
+                        }
+
+                        mv.visitMaxs(2, 1);
+                        mv.visitEnd();
+                    }
+
+                    // drop original instructions
+                    @Override public void visitInsn(int op) {}
+                    @Override public void visitVarInsn(int op, int v) {}
+                    @Override public void visitMethodInsn(int op, String o, String n, String d, boolean i) {}
+                    @Override public void visitFieldInsn(int op, String o, String n, String d) {}
+                    @Override public void visitJumpInsn(int op, Label l) {}
+                    @Override public void visitLabel(Label l) {}
+                    @Override public void visitMaxs(int s, int l) {}
+                    @Override public void visitTypeInsn(int op, String type) {}
+                    @Override public void visitLdcInsn(Object cst) {}
+                    @Override public void visitIntInsn(int op, int operand) {}
+                    @Override public void visitIincInsn(int v, int inc) {}
+                };
+            }
+
         }, ClassReader.EXPAND_FRAMES);
 
         return cw.toByteArray();
