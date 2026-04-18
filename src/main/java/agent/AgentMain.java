@@ -271,6 +271,10 @@ public class AgentMain {
 
             if (className == null) return null;
 
+            // ── OmniMobs — INTENTIONALLY NOT WHITELISTED ──
+            // flashfur/omnimobs/ — caught attempting runtime agent injection  🤣
+            // via CoreModMain.loadAgentAndTransformClasses()
+
             // ── GLOBAL WHITELIST ──
             // 🛑 HARD IMMUNITY (DO NOT TOUCH EVER)
             if (
