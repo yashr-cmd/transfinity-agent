@@ -34,7 +34,7 @@ It is an optional enhancement that runs at JVM startup.
 
 ## ❗ Notes
 
-* Tested on Minecraft 1.20.4+
+* Tested on Minecraft 1.20.1+
 * May not work on older versions
 * Safe to remove at any time
 
