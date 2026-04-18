@@ -285,6 +285,23 @@ public class AgentMain {
             // ── GLOBAL WHITELIST ──
             // 🛑 HARD IMMUNITY (DO NOT TOUCH EVER)
             if (className.startsWith("org/spongepowered/")
+                    || className.startsWith("com/sun/tools/attach/")
+                    || className.startsWith("groovyjarjarasm/asm/ClassWriter")
+                    || className.startsWith("jdk/internal/")
+                    || className.startsWith("jdk/jfr/")
+                    || className.startsWith("groovy/")
+                    || className.startsWith("groovyjarjarasm/")
+                    || className.startsWith("groovyjarjarasm/asm/")
+                    || className.startsWith("org/objectweb/asm/")
+                    || className.startsWith("kotlin/")
+                    || className.startsWith("net/mcreator/transfinityimproved/coremod/")
+                    || className.startsWith("org/codehaus/groovy/")
+                    ||className.startsWith("runtime/")
+                    || className.startsWith("net/mcreator/transfinityimproved/runtime/")
+                    || className.startsWith("net/rubygrapefruit/")
+                    || className.startsWith("org/gradle/")
+                    || className.startsWith("java/lang/instrument/")
+                    || className.startsWith("sun/instrument/")
                     || className.startsWith("net/mcreator/transfinityimproved/")
                     || className.startsWith("org/openjdk/")
                     || className.startsWith("org/joml/")
@@ -328,7 +345,11 @@ public class AgentMain {
             }
 
             // ── TRANSFORMERS (SAFE DISABLE) ──
-            if (isRealTransformer(classfileBuffer)) {
+            if (isRealTransformer(classfileBuffer)
+                    && !className.startsWith("org/gradle/")
+                    && !className.startsWith("cpw/mods/")
+                    && !className.startsWith("net/minecraftforge/")
+                    && !className.startsWith("net/neoforged/")) {
                 String group = extractGroup(className);
                 int score = addThreat(group);
 
@@ -348,7 +369,12 @@ public class AgentMain {
             }
 
             // ── ASM MANIPULATOR ──
-            if (isASMManipulator(classfileBuffer)) {
+            if (isASMManipulator(classfileBuffer)
+                    && !className.startsWith("org/gradle/")
+                    && !className.startsWith("cpw/mods/")
+                    && !className.startsWith("net/minecraftforge/")
+                    && !className.startsWith("net/neoforged/")
+                    && !className.startsWith("org/objectweb/")) {
                 String group = extractGroup(className);
                 int score = addThreat(group);
 
@@ -414,7 +440,7 @@ public class AgentMain {
             // ── RUNTIME INJECTION CHECK ─────────────────────────────
             int runtime = detectRuntimeThreat(classfileBuffer);
 
-            if (runtime != 0) {
+            if (runtime != 0 && !className.startsWith("org/gradle/")) {
                 String group = extractGroup(className);
                 int score = addThreat(group);
 
@@ -503,7 +529,8 @@ public class AgentMain {
 
             // Any class that is itself an Agent is suspicious
             if (className.contains("Agent")
-                    && !className.startsWith("agent/"))  // don't flag ourselves
+                    && !className.startsWith("agent/")      // don't flag ourselves
+                    && !className.startsWith("org/gradle/"))
                 return "agent-class";
 
             // Instrumentation hooks
