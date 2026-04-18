@@ -115,6 +115,7 @@ public class AgentMain {
             }
         }
 
+        // REPLACE isRealTransformer with this:
         private static boolean isRealTransformer(byte[] bytes) {
             try {
                 ClassReader cr = new ClassReader(bytes);
@@ -127,25 +128,23 @@ public class AgentMain {
 
                         if (interfaces != null) {
                             for (String i : interfaces) {
-                                if (i.contains("TransformationService")
-                                        || i.contains("ITransformer")
-                                        || i.contains("ClassFileTransformer")) {
+                                // Only match EXACT coremod transformer interfaces, not anything with "Transformer" in the name
+                                if (i.equals("cpw/mods/modlauncher/api/ITransformationService")
+                                        || i.equals("cpw/mods/modlauncher/api/ITransformer")
+                                        || i.equals("java/lang/instrument/ClassFileTransformer")) {
                                     found[0] = true;
                                 }
                             }
                         }
-
-                        if (superName != null && superName.contains("Transformer"))
-                            found[0] = true;
+                        // Do NOT check superName for "Transformer" — too many false positives
                     }
                 }, 0);
 
                 return found[0];
-
-            } catch (Throwable t) {
-                return false;
-            }
+            } catch (Throwable t) { return false; }
         }
+
+
 
         private static boolean isASMManipulator(byte[] bytes) {
             try {
@@ -188,6 +187,7 @@ public class AgentMain {
             }
         }
 
+        // REPLACE hasMixinInjection with this:
         private static boolean hasMixinInjection(byte[] bytes) {
             try {
                 ClassReader cr = new ClassReader(bytes);
@@ -197,21 +197,13 @@ public class AgentMain {
                     @Override
                     public MethodVisitor visitMethod(int access, String name, String desc,
                                                      String sig, String[] exceptions) {
-
-                        // Detect typical mixin-generated method names
-                        if (name.startsWith("handler$")
-                                || name.contains("$inject$")
-                                || name.contains("callback")) {
-                            found[0] = true;
-                        }
-
                         return new MethodVisitor(ASM_API) {
                             @Override
                             public void visitMethodInsn(int opcode, String owner,
                                                         String name, String desc, boolean itf) {
-
-                                // Correct place for this check
-                                if (owner.contains("org/spongepowered/asm/mixin/injection")) {
+                                // Only flag ACTUAL mixin injection API calls, not method name patterns
+                                if (owner.equals("org/spongepowered/asm/mixin/injection/callback/CallbackInfo")
+                                        || owner.equals("org/spongepowered/asm/mixin/injection/Inject")) {
                                     found[0] = true;
                                 }
                             }
@@ -220,10 +212,7 @@ public class AgentMain {
                 }, 0);
 
                 return found[0];
-
-            } catch (Throwable t) {
-                return false;
-            }
+            } catch (Throwable t) { return false; }
         }
 
         private static boolean isTransformService(byte[] bytes) {
@@ -284,42 +273,337 @@ public class AgentMain {
 
             // ── GLOBAL WHITELIST ──
             // 🛑 HARD IMMUNITY (DO NOT TOUCH EVER)
-            if (className.startsWith("org/spongepowered/")
-                    || className.startsWith("com/sun/tools/attach/")
-                    || className.startsWith("groovyjarjarasm/asm/ClassWriter")
-                    || className.startsWith("jdk/internal/")
-                    || className.startsWith("jdk/jfr/")
-                    || className.startsWith("groovy/")
-                    || className.startsWith("groovyjarjarasm/")
-                    || className.startsWith("groovyjarjarasm/asm/")
-                    || className.startsWith("org/objectweb/asm/")
-                    || className.startsWith("kotlin/")
-                    || className.startsWith("net/mcreator/transfinityimproved/coremod/")
-                    || className.startsWith("org/codehaus/groovy/")
-                    ||className.startsWith("runtime/")
-                    || className.startsWith("net/mcreator/transfinityimproved/runtime/")
-                    || className.startsWith("net/rubygrapefruit/")
-                    || className.startsWith("org/gradle/")
-                    || className.startsWith("java/lang/instrument/")
-                    || className.startsWith("sun/instrument/")
-                    || className.startsWith("net/mcreator/transfinityimproved/")
-                    || className.startsWith("org/openjdk/")
-                    || className.startsWith("org/joml/")
-                    || className.startsWith("org/lwjgl/")
-                    || className.startsWith("cpw/mods/")
-                    || className.startsWith("net/minecraftforge/")
-                    || className.startsWith("net/neoforged/")
-                    || className.startsWith("net/jodah/")
-                    || className.startsWith("java/")
-                    || className.startsWith("javax/")
-                    || className.startsWith("jdk/")
-                    || className.startsWith("sun/")
-                    || className.startsWith("org/objectweb/")
-                    || className.startsWith("net/minecraft/")
-                    || className.startsWith("com/mojang/")
-                    || className.startsWith("io/netty/")
-                    || className.startsWith("org/apache/")
-                    || className.startsWith("com/google/")) {
+            if (
+                // ── CORE / JVM / JDK ──
+                    className.startsWith("java/")
+                            || className.startsWith("javax/")
+                            || className.startsWith("jdk/")
+                            || className.startsWith("sun/")
+                            || className.startsWith("jdk/internal/")
+                            || className.startsWith("jdk/jfr/")
+                            || className.startsWith("org/openjdk/")
+
+                            // ── ASM / BYTECODE / INSTRUMENTATION ──
+                            || className.startsWith("org/objectweb/asm/")
+                            || className.startsWith("org/objectweb/")
+                            || className.startsWith("groovyjarjarasm/asm/ClassWriter")
+                            || className.startsWith("groovyjarjarasm/asm/")
+                            || className.startsWith("groovyjarjarasm/")
+                            || className.startsWith("java/lang/instrument/")
+                            || className.startsWith("sun/instrument/")
+
+                            // ── GROOVY / KOTLIN / SCRIPTING ──
+                            || className.startsWith("groovy/")
+                            || className.startsWith("org/codehaus/groovy/")
+                            || className.startsWith("kotlin/")
+
+                            // ── GRADLE / BUILD TOOLS ──
+                            || className.startsWith("org/gradle/")
+                            || className.startsWith("net/rubygrapefruit/")
+
+                            // ── MINECRAFT CORE ──
+                            || className.startsWith("net/minecraft/")
+                            || className.startsWith("com/mojang/")
+
+                            // ── FORGE / NEOFORGE / CPW ──
+                            || className.startsWith("net/minecraftforge/")
+                            || className.startsWith("net/neoforged/")
+                            || className.startsWith("cpw/mods/")
+
+                            // ── MCREATOR / TRANSFINITY ──
+                            || className.startsWith("net/mcreator/transfinityimproved/")
+                            || className.startsWith("net/mcreator/transfinityimproved/coremod/")
+                            || className.startsWith("net/mcreator/transfinityimproved/runtime/")
+                            || className.startsWith("runtime/")
+
+                            // ── COMMON LIBRARIES ──
+                            || className.startsWith("io/netty/")
+                            || className.startsWith("org/apache/")
+                            || className.startsWith("com/google/")
+                            || className.startsWith("net/jodah/")
+                            || className.startsWith("org/joml/")
+                            || className.startsWith("org/lwjgl/")
+
+                            // ════════════════════════════════════════════════
+                            // ── PERFORMANCE MODS ──
+                            // ════════════════════════════════════════════════
+
+                            || className.startsWith("net/dmodoomsirius/")
+                            || className.startsWith("com/godzillaspinofossil/")
+                            || className.startsWith("godzillaspinofossil/")
+                            || className.startsWith("com/fossil/")
+                            || className.startsWith("prehistoric/")
+                            || className.startsWith("com/prehistoric/")
+                            || className.startsWith("net/nonamecrackers2/")
+                            || className.startsWith("nonamecrackers2/")
+
+                            // ── PekHUI (HUD mod) ──
+                            || className.startsWith("squeek502/pekhui/")
+                            || className.startsWith("squeek502/")
+
+                            // ── AppleSkin ──
+                            || className.startsWith("squeek502/appleskin/")
+
+                            // ── Xaero's (minimap / worldmap) ──
+                            || className.startsWith("xaero/")
+
+                            // ── JourneyMap ──
+                            || className.startsWith("journeymap/")
+
+                            // ── Just Enough Items (mezz) ──
+                            || className.startsWith("mezz/")
+
+                            // ── KubeJS / Rhino scripting ──
+                            || className.startsWith("dev/latvian/mods/")
+                            || className.startsWith("dev/latvian/")
+
+                            // ── FTB mods ──
+                            || className.startsWith("com/feed_the_beast/")
+                            || className.startsWith("dev/ftb/")
+
+                            // ── Quark / AutoRegLib (Vazkii continued) ──
+                            || className.startsWith("org/violetmoon/")
+
+                            // ── Configured (MrCrayfish) ──
+                            || className.startsWith("com/mrcrayfish/configured/")
+
+                            // ── FLAN's mod ──
+                            || className.startsWith("com/flansmod/")
+
+                            // ── TerraForged ──
+                            || className.startsWith("com/terraforged/")
+
+                            // ── Create mod ──
+                            || className.startsWith("com/simibubi/create/")
+                            || className.startsWith("com/simibubi/")
+
+                            // ── Flywheel (Create dep) ──
+                            || className.startsWith("com/jozufozu/flywheel/")
+                            || className.startsWith("com/jozufozu/")
+
+                            // ── Registrate (Create dep) ──
+                            || className.startsWith("com/tterrag/registrate/")
+                            || className.startsWith("com/tterrag/")
+
+                            // ── Patchouli (book API) ──
+                            || className.startsWith("vazkii/patchouli/")
+                            || className.startsWith("vazkii/")
+
+                            // ── Botania / Quark / AutoRegLib ──
+                            || className.startsWith("net/darkhax/")
+                            || className.startsWith("net/darkhax/bookshelf/")
+                            || className.startsWith("net/darkhax/gamestages/")
+
+                            // ── Curios API ──
+                            || className.startsWith("top/theillusivec4/curios/")
+                            || className.startsWith("top/theillusivec4/")
+
+                            // ── Configured / Catalogue ──
+                            || className.startsWith("com/mrcrayfish/")
+
+                            // ── Cloth Config / ModMenu ──
+                            || className.startsWith("me/shedaniel/clothconfig/")
+                            || className.startsWith("me/shedaniel/")
+
+                            // ── Architectury API ──
+                            || className.startsWith("dev/architectury/")
+
+                            // ── Fabric API / Loader ──
+                            || className.startsWith("net/fabricmc/")
+                            || className.startsWith("net/fabricmc/fabric/")
+                            || className.startsWith("net/fabricmc/loader/")
+
+                            // ── Forge Config API Port ──
+                            || className.startsWith("fuzs/forgeconfigapiport/")
+                            || className.startsWith("fuzs/")
+
+                            // ── Mantle (Tinkers dep) ──
+                            || className.startsWith("slimeknights/mantle/")
+                            || className.startsWith("slimeknights/")
+
+                            // ── Caelus API ──
+                            || className.startsWith("top/theillusivec4/caelus/")
+
+                            // ── JEI / REI / EMI (recipe viewers) ──
+                            || className.startsWith("mezz/jei/")
+                            || className.startsWith("me/shedaniel/rei/")
+                            || className.startsWith("dev/emi/")
+
+                            // ── Jade / HWYLA / TOP ──
+                            || className.startsWith("snownee/jade/")
+                            || className.startsWith("mcp/mobius/waila/")
+                            || className.startsWith("mcjty/theoneprobe/")
+
+                            // ── YACL (Yet Another Config Lib) ──
+                            || className.startsWith("dev/isxander/yacl/")
+                            || className.startsWith("dev/isxander/")
+
+                            // ── CreativeCore ──
+                            || className.startsWith("team/creative/")
+
+                            // ── Moonlight Lib ──
+                            || className.startsWith("net/mehvahdjukaar/moonlight/")
+                            || className.startsWith("net/mehvahdjukaar/")
+
+                            // ── Blueprint (team abnormals) ──
+                            || className.startsWith("com/teamabnormals/blueprint/")
+                            || className.startsWith("com/teamabnormals/")
+
+                            // ── Placebo (Shadows of Gregory dep) ──
+                            || className.startsWith("shadows/placebo/")
+
+                            // ── TerraBlender ──
+                            || className.startsWith("terrablender/")
+
+                            // ── Night Config ──
+                            || className.startsWith("com/electronwill/nightconfig/")
+                            || className.startsWith("com/electronwill/")
+
+                            // ── GSON / Jackson / common serializers ──
+                            || className.startsWith("com/fasterxml/jackson/")
+
+                            // ── GeckoLib (animation library used by hundreds of mods) ──
+                            || className.startsWith("software/bernie/geckolib/")
+                            || className.startsWith("software/bernie/")
+
+                            // ── Geckolib dependencies / related ──
+                            || className.startsWith("com/eliotlash/mclib/")
+                            || className.startsWith("com/eliotlash/")
+
+                            // ── Sodium / Lithium / Phosphor (jellysquid3) ──
+                            || className.startsWith("me/jellysquid/")
+
+                            // ── Sodium (CaffeineMC fork/org) ──
+                            || className.startsWith("net/caffeinemc/")
+
+                            // ── Iris Shaders ──
+                            || className.startsWith("net/irisshaders/")
+                            || className.startsWith("net/coderbot/iris/")
+                            || className.startsWith("net/coderbot/")
+
+                            // ── Oculus (Forge Iris port) ──
+                            || className.startsWith("net/coderbot/oculus/")
+
+                            // ── Starlight (chunk lighting engine) ──
+                            || className.startsWith("ca/spottedleaf/")
+
+                            // ── FerriteCore (memory optimization) ──
+                            || className.startsWith("malte0811/")
+
+                            // ── Embeddium (Sodium Forge fork) ──
+                            || className.startsWith("org/embeddedt/embeddium/")
+
+                            // ── ModernFix (startup / memory / misc fixes) ──
+                            || className.startsWith("org/embeddedt/modernfix/")
+
+                            // ── Krypton (networking optimization) ──
+                            || className.startsWith("me/astei/krypton/")
+                            || className.startsWith("me/astei/")
+
+                            // ── Smooth Boot (thread optimization) ──
+                            || className.startsWith("me/lortseam/smoothboot/")
+                            || className.startsWith("me/lortseam/")
+
+                            // ── ImmediatelyFast (render batching) ──
+                            || className.startsWith("net/raphimc/immediatelyfast/")
+                            || className.startsWith("net/raphimc/")
+
+                            // ── VulkanMod ──
+                            || className.startsWith("net/vulkanmod/")
+
+                            // ── Nvidium / Cortex ──
+                            || className.startsWith("me/cortex/nvidium/")
+                            || className.startsWith("me/cortex/")
+
+                            // ── C2ME (Concurrent Chunk Management Engine) ──
+                            || className.startsWith("com/ishland/c2me/")
+                            || className.startsWith("com/ishland/")
+
+                            // ── OptiFine ──
+                            || className.startsWith("optifine/")
+                            || className.startsWith("net/optifine/")
+
+                            // ── OptiFabric ──
+                            || className.startsWith("me/modmuss50/optifabric/")
+                            || className.startsWith("me/modmuss50/")
+
+                            // ── FalsePattern (already present, kept here for grouping) ──
+                            || className.startsWith("com/falsepattern/")
+
+                            // ── Clumps (XP orb merging) ──
+                            || className.startsWith("com/jaredlll08/clumps/")
+                            || className.startsWith("com/jaredlll08/")
+
+                            // ── FastWorkbench / FastFurnace / FastSuite (shadows) ──
+                            || className.startsWith("shadows/fastbench/")
+                            || className.startsWith("shadows/fastfurnace/")
+                            || className.startsWith("shadows/fastsuite/")
+                            || className.startsWith("shadows/")
+
+                            // ── Chunky (pre-generation) ──
+                            || className.startsWith("org/popcraft/chunky/")
+                            || className.startsWith("org/popcraft/")
+
+                            // ── BetterFps ──
+                            || className.startsWith("guichaguri/betterfps/")
+                            || className.startsWith("guichaguri/")
+
+                            // ── LazyDFU (deferred DFU init) ──
+                            || className.startsWith("com/tuxedocat/lazydfu/")
+                            || className.startsWith("me/lambdaurora/lazydfu/")
+
+                            // ── Entity Culling (tr7zw) ──
+                            || className.startsWith("mcp/mobius/xtones/")
+                            || className.startsWith("net/tr7zw/")
+
+                            // ── Exordium (GUI render throttling) ──
+                            || className.startsWith("com/github/terminalmc/exordium/")
+
+                            // ── Alternate Current (redstone engine) ──
+                            || className.startsWith("alternate_current/")
+                            || className.startsWith("com/thealgorithm476/alternatecurrent/")
+
+                            // ── Concurrent-util / Vanilla Scheduling ──
+                            || className.startsWith("ca/spottedleaf/concurrentutil/")
+
+                            // ── Spark (profiler) ──
+                            || className.startsWith("me/lucko/spark/")
+
+                            // ── ServerCore ──
+                            || className.startsWith("com/github/servercore/")
+
+                            // ── Carpet Mod (technical/perf) ──
+                            || className.startsWith("carpet/")
+
+                            // ── Patchwork / Sponge ──
+                            || className.startsWith("org/spongepowered/")
+
+                            // ── SpongeForge / SpongeAPI ──
+                            || className.startsWith("org/spongepowered/asm/")
+
+                            // ── MixinExtras ──
+                            || className.startsWith("com/llamalad7/mixinextras/")
+                            || className.startsWith("com/llamalad7/")
+
+                            // ── Dynamic FPS ──
+                            || className.startsWith("dynamic_fps/")
+                            || className.startsWith("net/lasertag/dynamicfps/")
+
+                            // ── Cull Leaves / Cull Particles ──
+                            || className.startsWith("net/draycia/")
+                            || className.startsWith("com/github/xt9/cullparticles/")
+
+                            // ── MemoryLeakFix ──
+                            || className.startsWith("com/github/fudge/memoryleakfix/")
+
+                            // ── AttributeFix ──
+                            || className.startsWith("com/jamieswhiteshirt/attributefix/")
+                            || className.startsWith("com/jamieswhiteshirt/")
+
+                            // ── Radium (Lithium Forge port by Frozenblock) ──
+                            || className.startsWith("org/frozenblock/")
+
+            ) {
                 return null;
             }
 
@@ -426,7 +710,11 @@ public class AgentMain {
             //  ── MIXIN DETECTION ──
             if (className.toLowerCase().contains("mixin")
                     && !className.startsWith("org/spongepowered/")
-                    && !className.startsWith("net/mcreator/transfinityimproved/")) {
+                    && !className.startsWith("net/mcreator/transfinityimproved/")
+                    && (className.contains("LivingEntity")
+                    || className.contains("PlayerEntity")
+                    || className.contains("ServerPlayer")
+                    || className.contains("LocalPlayer"))) {
 
                 String group = extractGroup(className);
                 int score = addThreat(group);
