@@ -28,10 +28,12 @@ public class AgentMain {
     private static final int THREAT_PER_HIT = 2;
 
     // ── At this score the group gets DISABLED (methods wiped) ────────────────
-    private static final int DISABLE_THRESHOLD = 4;
+    //    Raised from 4 → 6
+    private static final int DISABLE_THRESHOLD = 6;
 
     // ── ABOVE this score the group gets ERASED (empty shell class) ───────────
-    private static final int ERASE_THRESHOLD = 6;
+    //    Raised from 6 → 8
+    private static final int ERASE_THRESHOLD = 8;
 
     // ========================================================================
     //  premain — JVM calls this before your actual main() runs
@@ -88,19 +90,23 @@ public class AgentMain {
                             public void visitMethodInsn(int op, String owner,
                                                         String name, String desc, boolean itf) {
 
+                                // flag 1 — VirtualMachine attach/loadAgent (runtime agent injection)
                                 if (owner.contains("VirtualMachine")
                                         && (name.equals("attach") || name.equals("loadAgent")))
                                     flags[0] |= 1;
 
+                                // flag 2 — Instrumentation addTransformer/retransformClasses (runtime retransform)
                                 if (owner.contains("Instrumentation")
                                         && (name.contains("addTransformer")
                                         || name.contains("retransformClasses")))
                                     flags[0] |= 2;
 
+                                // flag 4 — System/Runtime load/loadLibrary (DLL injection)
                                 if ((owner.equals("java/lang/System") || owner.equals("java/lang/Runtime"))
                                         && (name.equals("load") || name.equals("loadLibrary")))
                                     flags[0] |= 4;
 
+                                // flag 8 — Unsafe / defineClass (suspicious but not instant-kill)
                                 if (owner.contains("Unsafe") || name.equals("defineClass"))
                                     flags[0] |= 8;
                             }
@@ -115,7 +121,6 @@ public class AgentMain {
             }
         }
 
-        // REPLACE isRealTransformer with this:
         private static boolean isRealTransformer(byte[] bytes) {
             try {
                 ClassReader cr = new ClassReader(bytes);
@@ -128,7 +133,7 @@ public class AgentMain {
 
                         if (interfaces != null) {
                             for (String i : interfaces) {
-                                // Only match EXACT coremod transformer interfaces, not anything with "Transformer" in the name
+                                // Only match EXACT coremod transformer interfaces
                                 if (i.equals("cpw/mods/modlauncher/api/ITransformationService")
                                         || i.equals("cpw/mods/modlauncher/api/ITransformer")
                                         || i.equals("java/lang/instrument/ClassFileTransformer")) {
@@ -136,15 +141,12 @@ public class AgentMain {
                                 }
                             }
                         }
-                        // Do NOT check superName for "Transformer" — too many false positives
                     }
                 }, 0);
 
                 return found[0];
             } catch (Throwable t) { return false; }
         }
-
-
 
         private static boolean isASMManipulator(byte[] bytes) {
             try {
@@ -187,7 +189,6 @@ public class AgentMain {
             }
         }
 
-        // REPLACE hasMixinInjection with this:
         private static boolean hasMixinInjection(byte[] bytes) {
             try {
                 ClassReader cr = new ClassReader(bytes);
@@ -201,7 +202,7 @@ public class AgentMain {
                             @Override
                             public void visitMethodInsn(int opcode, String owner,
                                                         String name, String desc, boolean itf) {
-                                // Only flag ACTUAL mixin injection API calls, not method name patterns
+                                // Only flag ACTUAL mixin injection API calls
                                 if (owner.equals("org/spongepowered/asm/mixin/injection/callback/CallbackInfo")
                                         || owner.equals("org/spongepowered/asm/mixin/injection/Inject")) {
                                     found[0] = true;
@@ -243,7 +244,6 @@ public class AgentMain {
         }
 
         // Tracks cumulative threat score per package-group
-        // e.g. "com/evil" is the group for "com/evil/MyPlugin" and "com/evil/MyXformer"
         private final ConcurrentHashMap<String, AtomicInteger> groupScores =
                 new ConcurrentHashMap<>();
 
@@ -262,17 +262,15 @@ public class AgentMain {
         public byte[] transform(
                 Module module,
                 ClassLoader loader,
-                String className,           // e.g. "com/evil/MyPlugin"  (slashes, not dots)
+                String className,
                 Class<?> classBeingRedefined,
                 ProtectionDomain domain,
-                byte[] classfileBuffer) {// raw bytecode of the class
-
-
+                byte[] classfileBuffer) {
 
             if (className == null) return null;
 
             // ── OmniMobs — INTENTIONALLY NOT WHITELISTED ──
-            // flashfur/omnimobs/ — caught attempting runtime agent injection  🤣
+            // flashfur/omnimobs/ — caught attempting runtime agent injection
             // via CoreModMain.loadAgentAndTransformClasses()
 
             // ── GLOBAL WHITELIST ──
@@ -531,7 +529,7 @@ public class AgentMain {
                             || className.startsWith("me/modmuss50/optifabric/")
                             || className.startsWith("me/modmuss50/")
 
-                            // ── FalsePattern (already present, kept here for grouping) ──
+                            // ── FalsePattern ──
                             || className.startsWith("com/falsepattern/")
 
                             // ── Clumps (XP orb merging) ──
@@ -625,14 +623,65 @@ public class AgentMain {
                 return null;
             }
 
-            // ── FIRST: TRANSFORMER CHECK ─────────────────────────────
-            // ── TRANSFORMATION SERVICE (DO NOT TOUCH) ──
-            if (isTransformService(classfileBuffer)) {
-                log("SAFE", "Allowing TransformationService: " + className);
-                return null; // IMPORTANT
+            // ════════════════════════════════════════════════════════════════
+            //  RUNTIME INJECTION CHECK — INSTANT KILL, NO SCORE NEEDED
+            //
+            //  flags 1, 2, 4 = VirtualMachine.attach/loadAgent,
+            //  Instrumentation.addTransformer/retransformClasses,
+            //  System/Runtime.load/loadLibrary (DLL injection)
+            //
+            //  These are hard kills regardless of package or score.
+            //  flag 8 (Unsafe/defineClass) still goes through score system.
+            // ════════════════════════════════════════════════════════════════
+            int runtime = detectRuntimeThreat(classfileBuffer);
+
+            if (runtime != 0 && !className.startsWith("org/gradle/")) {
+
+                if ((runtime & 7) != 0) {
+                    // flags 1 | 2 | 4 — runtime agent or DLL injection → instant erase
+                    String group = extractGroup(className);
+                    int score = addThreat(group);
+                    loudAction("✖✖✖ INSTANT KILL (RUNTIME AGENT/DLL INJECTION)",
+                            className, "agent/dll/retransform", group, score);
+                    return emptyClass(classfileBuffer);
+                }
+
+                if ((runtime & 8) != 0) {
+                    // flag 8 — Unsafe/defineClass → score-gated disable (not instant kill)
+                    String group = extractGroup(className);
+                    int score = addThreat(group);
+                    Action action = resolveAction(group, score);
+                    loudAction("⚠⚠⚠ UNSAFE (score-gated → " + action + ")",
+                            className, "unsafe", group, score);
+                    if (action == Action.ERASE)   return emptyClass(classfileBuffer);
+                    if (action == Action.DISABLE)  return disableAllMethods(classfileBuffer);
+                    // ALLOW — just watching
+                    return null;
+                }
             }
 
-            // ── TRANSFORMERS (SAFE DISABLE) ──
+            // ════════════════════════════════════════════════════════════════
+            //  SCORE-GATED DETECTION PIPELINE
+            //
+            //  All of the checks below add threat score and then let
+            //  resolveAction() decide what to do based on total group score.
+            //  Nothing here is an instant kill.
+            // ════════════════════════════════════════════════════════════════
+
+            // ── TRANSFORMATION SERVICE — score + watch ────────────────────────
+            if (isTransformService(classfileBuffer)) {
+                String group = extractGroup(className);
+                int score = addThreat(group);
+                Action action = resolveAction(group, score);
+                log("WATCH", String.format(
+                        "TransformationService detected: %-50s | group=%-20s | score=%d | verdict=%s",
+                        className, group, score, action));
+                if (action == Action.ERASE)   return emptyClass(classfileBuffer);
+                if (action == Action.DISABLE)  return disableSafe(classfileBuffer);
+                return null; // score too low to act yet
+            }
+
+            // ── REAL TRANSFORMER — score + act ───────────────────────────────
             if (isRealTransformer(classfileBuffer)
                     && !className.startsWith("org/gradle/")
                     && !className.startsWith("cpw/mods/")
@@ -640,23 +689,27 @@ public class AgentMain {
                     && !className.startsWith("net/neoforged/")) {
                 String group = extractGroup(className);
                 int score = addThreat(group);
-
-                loudAction("⚠⚠⚠ DISABLE (TRANSFORMER)", className, "transformer", group, score);
-                return disableSafe(classfileBuffer);
+                Action action = resolveAction(group, score);
+                loudAction("⚠ TRANSFORMER (score-gated → " + action + ")",
+                        className, "transformer", group, score);
+                if (action == Action.ERASE)   return emptyClass(classfileBuffer);
+                if (action == Action.DISABLE)  return disableSafe(classfileBuffer);
+                return null;
             }
 
-            // ── COREMOD ENTRY (BLOCK HARD) ──
+            // ── COREMOD ENTRY — score + act ──────────────────────────────────
             if (isCoremodEntry(classfileBuffer)) {
                 String group = extractGroup(className);
                 int score = addThreat(group);
-
-                loudAction("✖✖✖ ERASE (COREMOD ENTRY)",
+                Action action = resolveAction(group, score);
+                loudAction("⚠ COREMOD ENTRY (score-gated → " + action + ")",
                         className, "coremod-entry", group, score);
-
-                return emptyClass(classfileBuffer);
+                if (action == Action.ERASE)   return emptyClass(classfileBuffer);
+                if (action == Action.DISABLE)  return disableSafe(classfileBuffer);
+                return null;
             }
 
-            // ── ASM MANIPULATOR ──
+            // ── ASM MANIPULATOR — score + act ────────────────────────────────
             if (isASMManipulator(classfileBuffer)
                     && !className.startsWith("org/gradle/")
                     && !className.startsWith("cpw/mods/")
@@ -665,15 +718,15 @@ public class AgentMain {
                     && !className.startsWith("org/objectweb/")) {
                 String group = extractGroup(className);
                 int score = addThreat(group);
-
-                loudAction("⚠⚠⚠ DISABLE (ASM MANIPULATOR)",
+                Action action = resolveAction(group, score);
+                loudAction("⚠ ASM MANIPULATOR (score-gated → " + action + ")",
                         className, "asm", group, score);
-
-                return disableSafe(classfileBuffer);
+                if (action == Action.ERASE)   return emptyClass(classfileBuffer);
+                if (action == Action.DISABLE)  return disableSafe(classfileBuffer);
+                return null;
             }
 
-            // ── MIXIN INJECTION DETECTION ──
-            // ── TARGETED MIXIN DEFENSE ──
+            // ── TARGETED MIXIN DEFENSE — score + act ─────────────────────────
             if (hasMixinInjection(classfileBuffer)
                     && !className.startsWith("net/mcreator/transfinityimproved/")
                     && !className.startsWith("net/minecraft/")
@@ -689,29 +742,31 @@ public class AgentMain {
 
                     String group = extractGroup(className);
                     int score = addThreat(group);
-
-                    loudAction("✖✖✖ ERASE (TARGETED MIXIN)",
+                    Action action = resolveAction(group, score);
+                    loudAction("⚠ TARGETED MIXIN (score-gated → " + action + ")",
                             className, "mixin-targeted", group, score);
-
-                    return emptyClass(classfileBuffer);
+                    if (action == Action.ERASE)   return emptyClass(classfileBuffer);
+                    if (action == Action.DISABLE)  return disableSafe(classfileBuffer);
+                    return null;
                 }
             }
 
-            // ── VISITOR NAME HEURISTIC ──
+            // ── VISITOR NAME HEURISTIC — score + act ─────────────────────────
             if ((className.contains("ClassVisitor")
                     || className.contains("MethodVisitor"))
                     && !className.startsWith("org/objectweb/")) {
 
                 String group = extractGroup(className);
                 int score = addThreat(group);
-
-                loudAction("⚠⚠⚠ DISABLE (VISITOR NAME)",
+                Action action = resolveAction(group, score);
+                loudAction("⚠ VISITOR NAME (score-gated → " + action + ")",
                         className, "visitor-name", group, score);
-
-                return disableSafe(classfileBuffer);
+                if (action == Action.ERASE)   return emptyClass(classfileBuffer);
+                if (action == Action.DISABLE)  return disableSafe(classfileBuffer);
+                return null;
             }
 
-            //  ── MIXIN DETECTION ──
+            // ── MIXIN CLASS NAME — score + act ───────────────────────────────
             if (className.toLowerCase().contains("mixin")
                     && !className.startsWith("org/spongepowered/")
                     && !className.startsWith("net/mcreator/transfinityimproved/")
@@ -722,63 +777,39 @@ public class AgentMain {
 
                 String group = extractGroup(className);
                 int score = addThreat(group);
-
-                loudAction("⚠⚠⚠ DISABLE (MIXIN CLASS)",
+                Action action = resolveAction(group, score);
+                loudMixinAlert(className);
+                loudAction("⚠ MIXIN CLASS (score-gated → " + action + ")",
                         className, "mixin", group, score);
-
-                return disableSafe(classfileBuffer);
+                if (action == Action.ERASE)   return emptyClass(classfileBuffer);
+                if (action == Action.DISABLE)  return disableSafe(classfileBuffer);
+                return null;
             }
 
-            // ── RUNTIME INJECTION CHECK ─────────────────────────────
-            int runtime = detectRuntimeThreat(classfileBuffer);
-
-            if (runtime != 0 && !className.startsWith("org/gradle/")) {
-                String group = extractGroup(className);
-                int score = addThreat(group);
-
-                if ((runtime & 1) != 0 || (runtime & 2) != 0 || (runtime & 4) != 0) {
-                    loudAction("✖✖✖ ERASE (RUNTIME INJECTION)", className, "agent/dll", group, score);
-                    return emptyClass(classfileBuffer);
-                }
-
-                if ((runtime & 8) != 0) {
-                    loudAction("⚠⚠⚠ DISABLE (UNSAFE)", className, "unsafe", group, score);
-                    return disableAllMethods(classfileBuffer);
-                }
-            }
-
-            // ── STEP 1: Check if this class looks suspicious ──────────────────
+            // ════════════════════════════════════════════════════════════════
+            //  LEGACY SUSPICION HEURISTIC (name-based, lower priority)
+            // ════════════════════════════════════════════════════════════════
             String reason = evaluateSuspicion(className);
 
-            // Nothing suspicious → leave it alone
             if (reason == null) return null;
 
-            // ── STEP 2: Extra-loud alert specifically for Mixin classes ────────
             if (reason.equals("mixin")) {
                 loudMixinAlert(className);
             }
 
-            // ── STEP 3: Add threat to this class's package group ───────────────
             String group    = extractGroup(className);
             int    newScore = addThreat(group);
+            Action action   = resolveAction(group, newScore);
 
-            // ── STEP 4: Decide what to do based on the group's total score ─────
-            Action action = resolveAction(group, newScore);
-
-            // ── STEP 5: Execute the action ─────────────────────────────────────
             switch (action) {
 
                 case ERASE: {
-                    // Score is WAY too high — nuke the entire class into a hollow shell
                     loudAction("✖✖✖  E R A S E", className, reason, group, newScore);
                     return emptyClass(classfileBuffer);
                 }
 
                 case DISABLE: {
-                    // Score is over threshold — wipe all method bodies
                     loudAction("⚠⚠  D I S A B L E", className, reason, group, newScore);
-
-                    // Special case: MyLib2 has a targeted patch; everything else gets full wipe
                     if (className.contains("MyLib2")) {
                         return disableMyLib2(classfileBuffer);
                     }
@@ -786,11 +817,10 @@ public class AgentMain {
                 }
 
                 default: {
-                    // ALLOW — suspicious but score not high enough to act yet; log & watch
                     log("WATCH", String.format(
                             "%-55s | reason=%-22s | group=%-20s | groupScore=%d",
                             className, reason, group, newScore));
-                    return null;   // return null = "don't change the bytecode"
+                    return null;
                 }
             }
         }
@@ -799,52 +829,40 @@ public class AgentMain {
         //  Suspicion rules — returns a reason string, or null if class is clean
         // --------------------------------------------------------------------
         private static String evaluateSuspicion(String className) {
-            // Check for Mixin annotations / packages first (gets its own loud alert)
             if (className.contains("Mixin")
                     || className.startsWith("org/spongepowered/asm")
                     || className.startsWith("org/spongepowered/mixin")) {
                 return "mixin";
             }
 
-            // Known bad library
-            if (className.contains("MyLib2"))       return "known-bad-lib";
+            if (className.contains("MyLib2"))        return "known-bad-lib";
+            if (className.contains("MyPlugin"))      return "plugin-transformer";
+            if (className.contains("MyXformer"))     return "explicit-transformer";
+            if (className.contains("ClassVisitor"))  return "asm-visitor";
+            if (className.contains("MethodVisitor")) return "asm-method-visitor";
+            if (className.contains("ByteBuddy"))     return "bytebuddy-agent";
+            if (className.contains("javassist"))     return "javassist-agent";
 
-            // Explicit transformer / plugin class names
-            if (className.contains("MyPlugin"))     return "plugin-transformer";
-            if (className.contains("MyXformer"))    return "explicit-transformer";
-
-            // Generic suspicious naming patterns
-            if (className.contains("ClassVisitor")) return "asm-visitor";
-            if (className.contains("MethodVisitor"))return "asm-method-visitor";
-            if (className.contains("ByteBuddy"))    return "bytebuddy-agent";
-            if (className.contains("javassist"))    return "javassist-agent";
-
-            // Any class that is itself an Agent is suspicious
             if (className.contains("Agent")
-                    && !className.startsWith("agent/")      // don't flag ourselves
+                    && !className.startsWith("agent/")
                     && !className.startsWith("org/gradle/"))
                 return "agent-class";
 
-            // Instrumentation hooks
             if (className.contains("Instrumentation")) return "instrumentation-hook";
 
-            return null;   // clean
+            return null;
         }
 
         // --------------------------------------------------------------------
         //  Group threat accounting
         // --------------------------------------------------------------------
 
-        // Extracts the package group: first two segments of the class path.
-        // "com/evil/plugin/Foo" → "com/evil"
-        // This makes ALL classes from the same package share one threat score.
         private static String extractGroup(String className) {
             String[] parts = className.split("/");
             if (parts.length >= 2) return parts[0] + "/" + parts[1];
             return parts[0];
         }
 
-        // Adds THREAT_PER_HIT to the group and returns the new total score
         private int addThreat(String group) {
             AtomicInteger score = groupScores.computeIfAbsent(
                     group, k -> new AtomicInteger(0));
@@ -854,15 +872,12 @@ public class AgentMain {
             return newScore;
         }
 
-        // Decides (and remembers) the action for a group given its current score.
-        // The stored verdict can only ESCALATE — it never goes down.
         private Action resolveAction(String group, int score) {
             Action fresh;
             if      (score > ERASE_THRESHOLD)    fresh = Action.ERASE;
-            else if (score >= DISABLE_THRESHOLD) fresh = Action.DISABLE;
-            else                                 fresh = Action.ALLOW;
+            else if (score >= DISABLE_THRESHOLD)  fresh = Action.DISABLE;
+            else                                  fresh = Action.ALLOW;
 
-            // merge: keep whichever is higher (ordinal order: ALLOW < DISABLE < ERASE)
             groupVerdict.merge(group, fresh, (existing, incoming) ->
                     incoming.ordinal() > existing.ordinal() ? incoming : existing);
 
@@ -874,9 +889,6 @@ public class AgentMain {
     //  Bytecode patch utilities
     // ========================================================================
 
-    // ── ERASE: return a class that exists but does absolutely nothing ─────────
-    // Keeps only the constructor (calls super()) so the JVM doesn't crash.
-    // Every other method is completely removed.
     private static byte[] emptyClass(byte[] original) {
         ClassReader cr = new ClassReader(original);
         ClassWriter cw = new ClassWriter(0);
@@ -885,7 +897,6 @@ public class AgentMain {
             @Override
             public MethodVisitor visitMethod(int access, String name, String desc,
                                              String sig, String[] exceptions) {
-                // Keep constructor shell so the class is still instantiatable
                 if (name.equals("<init>")) {
                     MethodVisitor mv = super.visitMethod(access, name, desc, sig, exceptions);
                     mv.visitCode();
@@ -895,9 +906,8 @@ public class AgentMain {
                     mv.visitInsn(Opcodes.RETURN);
                     mv.visitMaxs(1, 1);
                     mv.visitEnd();
-                    return null;   // returning null means "don't forward original body"
+                    return null;
                 }
-                // Drop every other method (static init, all public methods, etc.)
                 return null;
             }
         }, 0);
@@ -905,12 +915,8 @@ public class AgentMain {
         return cw.toByteArray();
     }
 
-    // ── DISABLE (generic): replace every method body with an immediate RETURN ──
-    // The method still exists so interfaces are satisfied, but it does nothing.
-    // Return value is zeroed / null depending on the return type.
     private static byte[] disableAllMethods(byte[] original) {
         ClassReader cr = new ClassReader(original);
-        // COMPUTE_FRAMES → ASM recalculates stack maps so we don't get VerifyError
         ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES);
 
         cr.accept(new ClassVisitor(ASM_API, cw) {
@@ -919,19 +925,14 @@ public class AgentMain {
                                              String sig, String[] exceptions) {
                 MethodVisitor mv = super.visitMethod(access, name, desc, sig, exceptions);
 
-                // Leave constructors and static initializers intact —
-                // touching them tends to break class loading entirely.
                 if (name.equals("<init>") || name.equals("<clinit>")) return mv;
 
-                // For every other method: wrap with a visitor that
-                // IGNORES all original instructions and emits only a return.
                 return new MethodVisitor(ASM_API, mv) {
 
                     @Override
                     public void visitCode() {
                         super.visitCode();
 
-                        // Emit the correct zero / null return for each return type
                         Type returnType = Type.getReturnType(desc);
                         switch (returnType.getSort()) {
                             case Type.VOID:
@@ -952,7 +953,7 @@ public class AgentMain {
                             case Type.DOUBLE:
                                 mv.visitInsn(Opcodes.DCONST_0);
                                 mv.visitInsn(Opcodes.DRETURN);   break;
-                            default:  // object / array
+                            default:
                                 mv.visitInsn(Opcodes.ACONST_NULL);
                                 mv.visitInsn(Opcodes.ARETURN);   break;
                         }
@@ -960,20 +961,17 @@ public class AgentMain {
                         mv.visitEnd();
                     }
 
-                    // ── Drop all original bytecode instructions ───────────────
-                    @Override public void visitInsn(int op)                          {}
-                    @Override public void visitVarInsn(int op, int v)               {}
-                    @Override public void visitMethodInsn(int op, String o,
-                                                          String n, String d, boolean i)          {}
-                    @Override public void visitFieldInsn(int op, String o,
-                                                         String n, String d)                     {}
-                    @Override public void visitJumpInsn(int op, Label l)            {}
-                    @Override public void visitLabel(Label l)                       {}
-                    @Override public void visitMaxs(int s, int l)                   {}
-                    @Override public void visitTypeInsn(int op, String type)        {}
-                    @Override public void visitLdcInsn(Object cst)                  {}
-                    @Override public void visitIntInsn(int op, int operand)         {}
-                    @Override public void visitIincInsn(int v, int inc)             {}
+                    @Override public void visitInsn(int op)                                          {}
+                    @Override public void visitVarInsn(int op, int v)                               {}
+                    @Override public void visitMethodInsn(int op, String o, String n, String d, boolean i) {}
+                    @Override public void visitFieldInsn(int op, String o, String n, String d)      {}
+                    @Override public void visitJumpInsn(int op, Label l)                            {}
+                    @Override public void visitLabel(Label l)                                       {}
+                    @Override public void visitMaxs(int s, int l)                                   {}
+                    @Override public void visitTypeInsn(int op, String type)                        {}
+                    @Override public void visitLdcInsn(Object cst)                                  {}
+                    @Override public void visitIntInsn(int op, int operand)                         {}
+                    @Override public void visitIincInsn(int v, int inc)                             {}
                 };
             }
         }, ClassReader.EXPAND_FRAMES);
@@ -993,7 +991,6 @@ public class AgentMain {
 
                 MethodVisitor mv = super.visitMethod(access, name, desc, sig, exceptions);
 
-                // Keep constructors intact
                 if (name.equals("<init>") || name.equals("<clinit>")) return mv;
 
                 return new MethodVisitor(ASM_API, mv) {
@@ -1037,7 +1034,6 @@ public class AgentMain {
                             default:
                                 String type = returnType.getInternalName();
 
-                                // SAFE COLLECTION RETURNS
                                 if ("java/util/List".equals(type)) {
                                     mv.visitMethodInsn(Opcodes.INVOKESTATIC,
                                             "java/util/Collections",
@@ -1068,7 +1064,6 @@ public class AgentMain {
                         mv.visitEnd();
                     }
 
-                    // drop original instructions
                     @Override public void visitInsn(int op) {}
                     @Override public void visitVarInsn(int op, int v) {}
                     @Override public void visitMethodInsn(int op, String o, String n, String d, boolean i) {}
@@ -1088,11 +1083,7 @@ public class AgentMain {
         return cw.toByteArray();
     }
 
-    // ── DISABLE (targeted): MyLib2-specific patch ─────────────────────────────
-    // Falls back to full method wipe — replace with your own ASM logic if needed.
     private static byte[] disableMyLib2(byte[] classfileBuffer) {
-        // TODO: add MyLib2-specific targeted patching logic here if you have it.
-        // For now we just wipe all methods the same as the generic path.
         return disableAllMethods(classfileBuffer);
     }
 
@@ -1100,12 +1091,10 @@ public class AgentMain {
     //  Logging helpers
     // ========================================================================
 
-    // Standard tagged log line
     private static void log(String tag, String msg) {
         System.out.printf("[AGENT | %-18s] %s%n", tag, msg);
     }
 
-    // Big banner for startup
     private static void banner(String msg) {
         String bar = "═".repeat(60);
         System.out.println("\n╔" + bar + "╗");
@@ -1113,7 +1102,6 @@ public class AgentMain {
         System.out.println("╚" + bar + "╝\n");
     }
 
-    // Loud action line (disable / erase)
     private static void loudAction(String action, String className,
                                    String reason, String group, int score) {
         String bar = "!".repeat(70);
@@ -1126,7 +1114,6 @@ public class AgentMain {
         System.out.println(bar);
     }
 
-    // !! Extra-loud alert specifically for Mixin classes !!
     private static void loudMixinAlert(String className) {
         String bar = "*".repeat(70);
         System.out.println("\n" + bar);
